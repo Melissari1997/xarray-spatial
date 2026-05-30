@@ -267,8 +267,19 @@ def _piecewise(data, *, breakpoints, values):
     if _is_dask(data):
         import dask.array as da
 
+        # Detect whether chunks are cupy-backed so the map_blocks
+        # wrapper uses the same backend and preserves the dask array's
+        # storage class (numpy vs cupy).
+        try:
+            import cupy as _cp
+            _chunk_is_cupy = data._meta is not None and isinstance(data._meta, _cp.ndarray)
+        except (ImportError, AttributeError):
+            _chunk_is_cupy = False
+
         def _interp_block(block):
-            # Ensure block is numpy for np.interp (handles cupy chunks)
+            if _chunk_is_cupy:
+                arr = _cp.asarray(block)
+                return _cp.interp(arr, bp, vl)
             arr = np.asarray(block)
             return np.interp(arr, bp, vl)
 
@@ -291,8 +302,19 @@ def _categorical(data, *, mapping):
     if _is_dask(data):
         import dask.array as da
 
+        try:
+            import cupy as _cp2
+            _chunk_is_cupy2 = data._meta is not None and isinstance(data._meta, _cp2.ndarray)
+        except (ImportError, AttributeError):
+            _chunk_is_cupy2 = False
+
         def _apply_mapping(block):
-            # Ensure block is numpy (handles cupy chunks)
+            if _chunk_is_cupy2:
+                arr = _cp2.asarray(block)
+                out = _cp2.full(arr.shape, _cp2.nan, dtype=np.float64)
+                for k, v in zip(keys, vals):
+                    out[arr == k] = v
+                return out
             arr = np.asarray(block)
             out = np.full(arr.shape, np.nan, dtype=np.float64)
             for k, v in zip(keys, vals):
