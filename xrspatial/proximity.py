@@ -235,6 +235,10 @@ def great_circle_distance(
     a = np.sin(dlat / 2.0) ** 2 + \
         np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2.0) ** 2
 
+    # Clamp to [0, 1] to avoid NaN from arcsin when floating-point
+    # rounding pushes a slightly above 1.0 for antipodal points.
+    a = min(1.0, max(0.0, a))
+
     # earth radius: 6378137
     return radius * 2 * np.arcsin(np.sqrt(a))
 
@@ -311,6 +315,14 @@ def _gpu_manhattan_distance(x1, x2, y1, y2):
 
 @cuda.jit(device=True)
 def _gpu_great_circle_distance(x1, x2, y1, y2):
+    if x1 > 180 or x1 < -180:
+        return 0.0
+    if x2 > 180 or x2 < -180:
+        return 0.0
+    if y1 > 90 or y1 < -90:
+        return 0.0
+    if y2 > 90 or y2 < -90:
+        return 0.0
     if x1 == x2 and y1 == y2:
         return 0.0
     lat1 = y1 * 0.017453292519943295
@@ -322,6 +334,7 @@ def _gpu_great_circle_distance(x1, x2, y1, y2):
     a = (_math.sin(dlat / 2.0) ** 2
          + _math.cos(lat1) * _math.cos(lat2)
          * _math.sin(dlon / 2.0) ** 2)
+    a = min(1.0, max(0.0, a))
     return 6378137.0 * 2.0 * _math.asin(_math.sqrt(a))
 
 
