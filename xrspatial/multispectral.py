@@ -1676,7 +1676,13 @@ def _true_color_numpy(r, g, b, nodata, c, th):
     h, w = r.shape
     _check_true_color_memory(h, w)
 
-    a = np.where(np.logical_or(np.isnan(r), r <= nodata), 0, 255)
+    a = np.where(
+        np.logical_or.reduce([
+            np.isnan(r), r <= nodata,
+            np.isnan(g), g <= nodata,
+            np.isnan(b), b <= nodata,
+        ]), 0, 255
+    )
 
     out = np.zeros((h, w, 4), dtype=np.uint8)
 
@@ -1692,7 +1698,12 @@ def _true_color_dask(r, g, b, nodata, c, th):
     pixel_max = 255
 
     alpha = da.where(
-        da.logical_or(da.isnan(r), r <= nodata), 0, pixel_max
+        da.logical_or(
+            da.logical_or(da.isnan(r), r <= nodata),
+            da.logical_or(da.isnan(g), g <= nodata)
+        )
+        | (da.isnan(b) | (b <= nodata)),
+        0, pixel_max
     ).astype(np.uint8)
 
     red = (_normalize_data(r, pixel_max, c, th)).astype(np.uint8)
@@ -1710,7 +1721,12 @@ def _true_color_cupy(r, g, b, nodata, c, th):
     pixel_max = 255
     r_data = r.data
     a = cupy.where(
-        cupy.logical_or(cupy.isnan(r_data), r_data <= nodata), 0, pixel_max
+        cupy.logical_or(
+            cupy.logical_or(cupy.isnan(r_data), r_data <= nodata),
+            cupy.logical_or(cupy.isnan(g.data), g.data <= nodata)
+        )
+        | (cupy.isnan(b.data) | (b.data <= nodata)),
+        0, pixel_max
     ).astype(cupy.uint8)
     red = (_normalize_data(r, pixel_max, c, th)).astype(cupy.uint8)
     green = (_normalize_data(g, pixel_max, c, th)).astype(cupy.uint8)
@@ -1723,7 +1739,12 @@ def _true_color_dask_cupy(r, g, b, nodata, c, th):
     pixel_max = 255
     r_data = r.data
     alpha = da.where(
-        da.logical_or(da.isnan(r_data), r_data <= nodata), 0, pixel_max
+        da.logical_or(
+            da.logical_or(da.isnan(r_data), r_data <= nodata),
+            da.logical_or(da.isnan(g.data), g.data <= nodata)
+        )
+        | (da.isnan(b.data) | (b.data <= nodata)),
+        0, pixel_max
     ).astype(cupy.uint8)
     red = (_normalize_data(r, pixel_max, c, th)).astype(cupy.uint8)
     green = (_normalize_data(g, pixel_max, c, th)).astype(cupy.uint8)

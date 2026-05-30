@@ -1165,3 +1165,91 @@ def test_osavi_approaches_ndvi_for_large_dn(nir_data, red_data, qgis_ndvi):
     osavi_vals[mask] = np.nan
     np.testing.assert_allclose(
         osavi_vals, ndvi_vals, equal_nan=True, rtol=1e-3)
+
+
+# true_color alpha-channel NaN handling ----------
+def test_true_color_alpha_transparent_when_any_band_nan():
+    """Alpha must be 0 (transparent) when *any* band contains NaN,
+    not just when the red band is NaN.  Regression test for sweep
+    accuracy audit: previously only the red band was checked."""
+    red = xr.DataArray(
+        np.array([[5.0, 5.0], [5.0, 5.0]], dtype=np.float32),
+        dims=['y', 'x'])
+    green = xr.DataArray(
+        np.array([[5.0, np.nan], [5.0, 5.0]], dtype=np.float32),
+        dims=['y', 'x'])
+    blue = xr.DataArray(
+        np.array([[5.0, 5.0], [np.nan, 5.0]], dtype=np.float32),
+        dims=['y', 'x'])
+
+    red = red.assign_coords(y=[0, 1], x=[0, 1])
+    green = green.assign_coords(y=[0, 1], x=[0, 1])
+    blue = blue.assign_coords(y=[0, 1], x=[0, 1])
+
+    result = true_color(red, green, blue)
+    alpha = result.data[:, :, 3]
+
+    assert alpha[0, 1] == 0, "alpha should be 0 when green band is NaN"
+    assert alpha[1, 0] == 0, "alpha should be 0 when blue band is NaN"
+    assert alpha[0, 0] == 255, "alpha should be 255 when all bands are valid"
+    assert alpha[1, 1] == 255, "alpha should be 255 when all bands are valid"
+
+
+def test_true_color_alpha_transparent_when_any_band_nodata():
+    """Alpha must be 0 when *any* band is at or below the nodata threshold."""
+    nodata = 1
+    red = xr.DataArray(
+        np.array([[5.0, 5.0], [5.0, 5.0]], dtype=np.float32),
+        dims=['y', 'x'])
+    green = xr.DataArray(
+        np.array([[5.0, 0.5], [5.0, 5.0]], dtype=np.float32),
+        dims=['y', 'x'])
+    blue = xr.DataArray(
+        np.array([[5.0, 5.0], [0.5, 5.0]], dtype=np.float32),
+        dims=['y', 'x'])
+
+    red = red.assign_coords(y=[0, 1], x=[0, 1])
+    green = green.assign_coords(y=[0, 1], x=[0, 1])
+    blue = blue.assign_coords(y=[0, 1], x=[0, 1])
+
+    result = true_color(red, green, blue, nodata=nodata)
+    alpha = result.data[:, :, 3]
+
+    assert alpha[0, 1] == 0, "alpha should be 0 when green <= nodata"
+    assert alpha[1, 0] == 0, "alpha should be 0 when blue <= nodata"
+    assert alpha[0, 0] == 255, "alpha should be 255 when all bands > nodata"
+    assert alpha[1, 1] == 255, "alpha should be 255 when all bands > nodata"
+
+
+@dask_array_available
+def test_true_color_alpha_transparent_any_band_nan_dask():
+    """Same as test_true_color_alpha_transparent_when_any_band_nan
+    but via the dask backend."""
+    import dask.array as da
+    red = xr.DataArray(
+        da.from_array(
+            np.array([[5.0, 5.0], [5.0, 5.0]], dtype=np.float32),
+            chunks=(2, 2)),
+        dims=['y', 'x'])
+    green = xr.DataArray(
+        da.from_array(
+            np.array([[5.0, np.nan], [5.0, 5.0]], dtype=np.float32),
+            chunks=(2, 2)),
+        dims=['y', 'x'])
+    blue = xr.DataArray(
+        da.from_array(
+            np.array([[5.0, 5.0], [np.nan, 5.0]], dtype=np.float32),
+            chunks=(2, 2)),
+        dims=['y', 'x'])
+
+    red = red.assign_coords(y=[0, 1], x=[0, 1])
+    green = green.assign_coords(y=[0, 1], x=[0, 1])
+    blue = blue.assign_coords(y=[0, 1], x=[0, 1])
+
+    result = true_color(red, green, blue)
+    alpha = result.data[:, :, 3].compute()
+
+    assert alpha[0, 1] == 0, "dask: alpha should be 0 when green band is NaN"
+    assert alpha[1, 0] == 0, "dask: alpha should be 0 when blue band is NaN"
+    assert alpha[0, 0] == 255, "dask: alpha should be 255 when all bands valid"
+    assert alpha[1, 1] == 255, "dask: alpha should be 255 when all bands valid"
