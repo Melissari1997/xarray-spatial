@@ -33,34 +33,42 @@ from xrspatial.dataset_support import supports_dataset
 
 
 @ngjit
-def _cpu(data, cellsize):
+def _cpu(data, cellsize_x, cellsize_y):
     out = np.empty(data.shape, np.float32)
     out[:] = np.nan
     rows, cols = data.shape
+    csx = np.float64(cellsize_x)
+    csy = np.float64(cellsize_y)
+    csx2 = csx * csx
+    csy2 = csy * csy
     for y in range(1, rows - 1):
         for x in range(1, cols - 1):
-            d = (data[y + 1, x] + data[y - 1, x]) / 2 - data[y, x]
-            e = (data[y, x + 1] + data[y, x - 1]) / 2 - data[y, x]
-            out[y, x] = -2 * (d + e) * 100 / (cellsize * cellsize)
+            d = np.float64(data[y + 1, x]) + np.float64(data[y - 1, x])
+            d = d / np.float64(2) - np.float64(data[y, x])
+            e = np.float64(data[y, x + 1]) + np.float64(data[y, x - 1])
+            e = e / np.float64(2) - np.float64(data[y, x])
+            out[y, x] = np.float32(-np.float64(2) * (d / csy2 + e / csx2) * np.float64(100))
     return out
 
 
 def _run_numpy(data: np.ndarray,
-               cellsize: Union[int, float],
+               cellsize_x: Union[int, float],
+               cellsize_y: Union[int, float],
                boundary: str = 'nan') -> np.ndarray:
-    data = data.astype(np.float32)
+    data = data.astype(np.float64)
     if boundary == 'nan':
-        return _cpu(data, cellsize)
+        return _cpu(data, cellsize_x, cellsize_y)
     padded = _pad_array(data, 1, boundary)
-    result = _cpu(padded, cellsize)
+    result = _cpu(padded, cellsize_x, cellsize_y)
     return result[1:-1, 1:-1]
 
 
 def _run_dask_numpy(data: da.Array,
-                    cellsize: Union[int, float],
+                    cellsize_x: Union[int, float],
+                    cellsize_y: Union[int, float],
                     boundary: str = 'nan') -> da.Array:
-    data = data.astype(np.float32)
-    _func = partial(_cpu, cellsize=cellsize)
+    data = data.astype(np.float64)
+    _func = partial(_cpu, cellsize_x=cellsize_x, cellsize_y=cellsize_y)
     out = data.map_overlap(_func,
                            depth=(1, 1),
                            boundary=_boundary_to_dask(boundary),
@@ -69,50 +77,56 @@ def _run_dask_numpy(data: da.Array,
 
 
 @cuda.jit(device=True)
-def _gpu(arr, cellsize):
+def _gpu(arr, cellsize_x, cellsize_y):
     d = (arr[1, 0] + arr[1, 2]) / 2 - arr[1, 1]
     e = (arr[0, 1] + arr[2, 1]) / 2 - arr[1, 1]
-    curv = -2 * (d + e) * 100 / (cellsize[0] * cellsize[0])
+    csx2 = cellsize_x * cellsize_x
+    csy2 = cellsize_y * cellsize_y
+    curv = -2 * (d / csy2 + e / csx2) * 100
     return curv
 
 
 @cuda.jit
-def _run_gpu(arr, cellsize, out):
+def _run_gpu(arr, cellsize_x, cellsize_y, out):
     i, j = cuda.grid(2)
     di = 1
     dj = 1
     if (i - di >= 0 and i + di <= out.shape[0] - 1 and
             j - dj >= 0 and j + dj <= out.shape[1] - 1):
-        out[i, j] = _gpu(arr[i - di:i + di + 1, j - dj:j + dj + 1], cellsize)
+        out[i, j] = _gpu(arr[i - di:i + di + 1, j - dj:j + dj + 1], cellsize_x, cellsize_y)
 
 
 def _run_cupy(data: cupy.ndarray,
-              cellsize: Union[int, float],
+              cellsize_x: Union[int, float],
+              cellsize_y: Union[int, float],
               boundary: str = 'nan') -> cupy.ndarray:
     if boundary != 'nan':
         padded = _pad_array(data, 1, boundary)
-        result = _run_cupy(padded, cellsize)
+        result = _run_cupy(padded, cellsize_x, cellsize_y)
         return result[1:-1, 1:-1]
 
-    data = data.astype(cupy.float32)
-    cellsize_arr = cupy.array([float(cupy.asnumpy(cellsize).item())], dtype='f4')
+    data = data.astype(cupy.float64)
+    csx = cupy.array([float(cupy.asnumpy(cellsize_x).item())], dtype='f8')
+    csy = cupy.array([float(cupy.asnumpy(cellsize_y).item())], dtype='f8')
 
     griddim, blockdim = cuda_args(data.shape)
     out = cupy.empty(data.shape, dtype='f4')
     out[:] = cupy.nan
 
-    _run_gpu[griddim, blockdim](data, cellsize_arr, out)
+    _run_gpu[griddim, blockdim](data, csx, csy, out)
 
     return out
 
 
 def _run_dask_cupy(data: da.Array,
-                   cellsize: Union[int, float],
+                   cellsize_x: Union[int, float],
+                   cellsize_y: Union[int, float],
                    boundary: str = 'nan') -> da.Array:
-    data = data.astype(cupy.float32)
-    cellsize_arr = cupy.array([float(cupy.asnumpy(cellsize).item())], dtype='f4')
+    data = data.astype(cupy.float64)
+    csx = cupy.array([float(cupy.asnumpy(cellsize_x).item())], dtype='f8')
+    csy = cupy.array([float(cupy.asnumpy(cellsize_y).item())], dtype='f8')
 
-    _func = partial(_run_cupy, cellsize=cellsize_arr)
+    _func = partial(_run_cupy, cellsize_x=csx, cellsize_y=csy)
 
     out = data.map_overlap(_func,
                            depth=(1, 1),
@@ -261,7 +275,6 @@ def curvature(agg: xr.DataArray,
             "Set agg.attrs['res'] to a (x, y) tuple of non-zero floats, "
             "or attach numeric x/y coordinates to the DataArray."
         )
-    cellsize = (cellsize_x + cellsize_y) / 2
 
     _validate_boundary(boundary)
 
@@ -271,7 +284,7 @@ def curvature(agg: xr.DataArray,
         dask_func=_run_dask_numpy,
         dask_cupy_func=_run_dask_cupy
     )
-    out = mapper(agg)(agg.data, cellsize, boundary)
+    out = mapper(agg)(agg.data, cellsize_x, cellsize_y, boundary)
     return xr.DataArray(out,
                         name=name,
                         coords=agg.coords,

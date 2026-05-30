@@ -176,3 +176,64 @@ def test_curvature_invalid_cellsize(res):
     agg = create_test_raster(data, attrs={'res': res})
     with pytest.raises(ValueError, match="non-zero, finite cell size"):
         curvature(agg)
+
+
+def test_curvature_non_square_pixels():
+    """Non-square pixels must be normalised by their respective cellsizes.
+
+    With res=(1, 2), the y-direction (cellsize_y=2) contributes 1/4 as much
+    as the x-direction (cellsize_x=1).  A single-cell depression at centre
+    should produce asymmetric curvature.
+    """
+    data = np.array([
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, -1, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0]], dtype=np.float64)
+    agg = create_test_raster(data, attrs={'res': (1, 2)})
+    result = curvature(agg)
+    r = result.data
+    # centre cell (2,3): d=(0+0)/2-(-1)=1, e=(0+0)/2-(-1)=1
+    # curv = -2*(1/4 + 1/1)*100 = -2*(0.25+1)*100 = -250
+    np.testing.assert_allclose(r[2, 3], -250.0, rtol=1e-10)
+    # cell above centre (1,3): d=(0+(-1))/2-0=-0.5, e=0
+    # curv = -2*(-0.5/4 + 0)*100 = 25
+    np.testing.assert_allclose(r[1, 3], 25.0, rtol=1e-10)
+    # cell to left of centre (2,2): d=0, e=(0+(-1))/2-0=-0.5
+    # curv = -2*(0 + -0.5/1)*100 = 100
+    np.testing.assert_allclose(r[2, 2], 100.0, rtol=1e-10)
+
+
+def test_curvature_float64_precision():
+    """Large elevation values with small differences must not lose precision.
+
+    With elevation ~10000 and differences of 0.001, float32 would round
+    the difference to zero.  float64 intermediates preserve it.
+    """
+    base = 10000.0
+    data = np.full((5, 5), base, dtype=np.float64)
+    data[2, 2] = base - 0.001
+    agg = create_test_raster(data, attrs={'res': (1, 1)})
+    result = curvature(agg)
+    # centre: d=(base+base)/2-(base-0.001)=0.001, e=0.001
+    # curv = -2*(0.001+0.001)*100 = -0.4
+    np.testing.assert_allclose(result.data[2, 2], -0.4, rtol=1e-6)
+
+
+@dask_array_available
+def test_non_square_pixels_dask():
+    """Non-square pixel handling must be consistent between numpy and dask."""
+    data = np.array([
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, -1, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0]], dtype=np.float64)
+    numpy_agg = create_test_raster(data, backend='numpy', attrs={'res': (1, 2)})
+    dask_agg = create_test_raster(data, backend='dask+numpy',
+                                  attrs={'res': (1, 2)}, chunks=(3, 3))
+    np_result = curvature(numpy_agg)
+    da_result = curvature(dask_agg)
+    np.testing.assert_allclose(
+        np_result.data, da_result.data.compute(), equal_nan=True, rtol=1e-10)
